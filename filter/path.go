@@ -70,37 +70,24 @@ func (v PathValidator) Path() filter.Path {
 
 // Validate checks whether the path is a valid path within the given reference schemas.
 func (v PathValidator) Validate() error {
-	err := v.validatePath(v.schema)
-	if err == nil {
-		return nil
-	}
-	for _, e := range v.extensions {
-		if err := v.validatePath(e); err == nil {
-			return nil
-		}
-	}
-	return err
+	return v.validatePath(append([]schema.Schema{v.schema}, v.extensions...))
 }
 
-// validatePath tries to validate the path against the given schema.
-func (v PathValidator) validatePath(ref schema.Schema) error {
+// validatePath tries to validate the path against the given reference schemas. Attribute resolution is shared with
+// the filter validator, so uri-prefixed paths are only resolved against the schema whose id matches the prefix.
+func (v PathValidator) validatePath(refs []schema.Schema) error {
 	// e.g. members
 	//      ^______
-	attr, err := validateAttributePath(ref, v.path.AttributePath)
+	resolved, err := resolveAttributePath(refs, v.path.AttributePath)
 	if err != nil {
 		return err
 	}
+	attr := resolved.attr
 
 	// e.g. members[value eq "0"]
 	//             ^_____________
 	if v.path.ValueExpression != nil {
-		if err := validateExpression(
-			schema.Schema{
-				ID:         ref.ID,
-				Attributes: MultiValuedFilterAttributes(attr),
-			},
-			v.path.ValueExpression,
-		); err != nil {
+		if err := validateExpression(resolved.nestedRefs(), v.path.ValueExpression); err != nil {
 			return err
 		}
 	}
@@ -108,7 +95,7 @@ func (v PathValidator) validatePath(ref schema.Schema) error {
 	// e.g. members[value eq "0"].displayName
 	//                            ^__________
 	if subAttrName := v.path.SubAttributeName(); subAttrName != "" {
-		if err := validateSubAttribute(attr, subAttrName); err != nil {
+		if _, err := resolveSubAttribute(attr, subAttrName); err != nil {
 			return err
 		}
 	}
