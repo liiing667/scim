@@ -206,6 +206,9 @@ func (v OperationValidator) validateEmptyPath() (interface{}, error) {
 			continue
 		}
 
+		if err := f.CheckRawFilterBudget([]byte(p)); err != nil {
+			return nil, err
+		}
 		path, err := filter.ParsePath([]byte(p))
 		if err != nil {
 			return nil, fmt.Errorf("invalid attribute path: %s", p)

@@ -364,6 +364,30 @@ func TestServerResourcePatchHandlerInvalidPath(t *testing.T) {
 	assertEqualSCIMErrors(t, &errors.ScimErrorInvalidPath, scimErr)
 }
 
+func TestServerResourcePatchHandlerComplexityBudget(t *testing.T) {
+	// An over-budget attribute path must be rejected as a 400 instead of crashing the parser.
+	deepPath := "emails" + strings.Repeat("[not(", 5000) +
+		`value eq "work"` + strings.Repeat(")]", 5000)
+	body := fmt.Sprintf(`{
+		"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+		"Operations":[
+		  {
+		    "op":"remove",
+		    "path":%q
+		  }
+		]
+	}`, deepPath)
+	req := httptest.NewRequest(http.MethodPatch, "/Users/0001", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	newTestServer(t).ServeHTTP(rr, req)
+
+	assertEqualStatusCode(t, http.StatusBadRequest, rr.Code)
+
+	var scimErr errors.ScimError
+	assertUnmarshalNoError(t, json.Unmarshal(rr.Body.Bytes(), &scimErr))
+	assertEqual(t, http.StatusBadRequest, scimErr.Status)
+}
+
 func TestServerResourcePatchHandlerInvalidRemoveOp(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPatch, "/Groups/0001", strings.NewReader(`{
 		"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
@@ -1117,6 +1141,53 @@ func TestServerResourcesGetHandlerFilterOnCommonAttribute(t *testing.T) {
 			assertEqualStatusCode(t, http.StatusOK, rr.Code)
 		})
 	}
+}
+
+func TestServerResourcesGetHandlerFilterComplexityBudget(t *testing.T) {
+	// A filter with thousands of nested groups must be rejected up front as a 400
+	// invalidFilter instead of tying up the request goroutine and failing with a 500.
+	var raw strings.Builder
+	for i := 0; i < 5000; i++ {
+		raw.WriteString("not(")
+	}
+	raw.WriteString(`userName eq "a"`)
+	for i := 0; i < 5000; i++ {
+		raw.WriteByte(')')
+	}
+
+	target := fmt.Sprintf("/Users?filter=%s", url.QueryEscape(raw.String()))
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rr := httptest.NewRecorder()
+	newTestServer(t).ServeHTTP(rr, req)
+
+	assertEqualStatusCode(t, http.StatusBadRequest, rr.Code)
+
+	var scimErr errors.ScimError
+	assertUnmarshalNoError(t, json.Unmarshal(rr.Body.Bytes(), &scimErr))
+	assertEqualSCIMErrors(t, &errors.ScimErrorInvalidFilter, &scimErr)
+}
+
+func TestServerResourcesSearchHandlerFilterComplexityBudget(t *testing.T) {
+	var raw strings.Builder
+	for i := 0; i < 5000; i++ {
+		raw.WriteString("not(")
+	}
+	raw.WriteString(`userName eq "a"`)
+	for i := 0; i < 5000; i++ {
+		raw.WriteByte(')')
+	}
+
+	body := fmt.Sprintf(`{"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"filter":%q}`, raw.String())
+	req := httptest.NewRequest(http.MethodPost, "/Users/.search", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	newTestServerWithSearchHandler(t).ServeHTTP(rr, req)
+
+	assertEqualStatusCode(t, http.StatusBadRequest, rr.Code)
+
+	var scimErr errors.ScimError
+	assertUnmarshalNoError(t, json.Unmarshal(rr.Body.Bytes(), &scimErr))
+	assertEqualSCIMErrors(t, &errors.ScimErrorInvalidFilter, &scimErr)
 }
 
 func TestServerResourcesGetHandlerMaxCount(t *testing.T) {

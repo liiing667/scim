@@ -123,8 +123,14 @@ func NewFilterValidator(exp filter.Expression, s schema.Schema, exts ...schema.S
 
 // NewValidator constructs a new filter validator.
 func NewValidator(exp string, s schema.Schema, exts ...schema.Schema) (Validator, error) {
+	if err := CheckRawFilterBudget([]byte(exp)); err != nil {
+		return Validator{}, err
+	}
 	e, err := filter.ParseFilter([]byte(exp))
 	if err != nil {
+		return Validator{}, err
+	}
+	if err := checkExpressionBudget(e); err != nil {
 		return Validator{}, err
 	}
 	return Validator{
@@ -141,6 +147,15 @@ func (v Validator) GetFilter() filter.Expression {
 
 // PassesFilter checks whether given resources passes the filter.
 func (v Validator) PassesFilter(resource map[string]interface{}) error {
+	if err := checkExpressionBudget(v.filter); err != nil {
+		return err
+	}
+	return v.passesFilter(resource)
+}
+
+// passesFilter contains the recursive evaluation logic. The depth and node budget is enforced
+// once by the public PassesFilter wrapper before evaluation starts.
+func (v Validator) passesFilter(resource map[string]interface{}) error {
 	switch e := v.filter.(type) {
 	case *filter.ValuePath:
 		ref, attr, ok := v.referenceContains(e.AttributePath)
@@ -173,7 +188,7 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 				if !ok {
 					return fmt.Errorf("the target is not a complex attribute")
 				}
-				if err := valueFilter.PassesFilter(attr); err == nil {
+				if err := valueFilter.passesFilter(attr); err == nil {
 					// Found an attribute that passed the value filter.
 					return nil
 				}
@@ -263,7 +278,7 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 				v.schema,
 				v.extensions,
 			}
-			if err := leftValidator.PassesFilter(resource); err != nil {
+			if err := leftValidator.passesFilter(resource); err != nil {
 				return err
 			}
 			rightValidator := Validator{
@@ -271,14 +286,14 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 				v.schema,
 				v.extensions,
 			}
-			return rightValidator.PassesFilter(resource)
+			return rightValidator.passesFilter(resource)
 		case filter.OR:
 			leftValidator := Validator{
 				e.Left,
 				v.schema,
 				v.extensions,
 			}
-			if err := leftValidator.PassesFilter(resource); err == nil {
+			if err := leftValidator.passesFilter(resource); err == nil {
 				return nil
 			}
 			rightValidator := Validator{
@@ -286,7 +301,7 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 				v.schema,
 				v.extensions,
 			}
-			return rightValidator.PassesFilter(resource)
+			return rightValidator.passesFilter(resource)
 		}
 		return fmt.Errorf("the resource does not pass the filter")
 	case *filter.NotExpression:
@@ -295,7 +310,7 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 			v.schema,
 			v.extensions,
 		}
-		if err := validator.PassesFilter(resource); err != nil {
+		if err := validator.passesFilter(resource); err != nil {
 			return nil
 		}
 		return fmt.Errorf("the resource does not pass the filter")
@@ -306,6 +321,9 @@ func (v Validator) PassesFilter(resource map[string]interface{}) error {
 
 // Validate checks whether the expression is a valid path within the given reference schemas.
 func (v Validator) Validate() error {
+	if err := checkExpressionBudget(v.filter); err != nil {
+		return err
+	}
 	err := validateExpression(v.schema, v.filter)
 	if err == nil {
 		return nil

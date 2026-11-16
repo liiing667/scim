@@ -53,9 +53,17 @@ type PathValidator struct {
 
 // NewPathValidator constructs a new path validator.
 func NewPathValidator(pathFilter string, s schema.Schema, exts ...schema.Schema) (PathValidator, error) {
+	if err := CheckRawFilterBudget([]byte(pathFilter)); err != nil {
+		return PathValidator{}, err
+	}
 	f, err := filter.ParsePath([]byte(pathFilter))
 	if err != nil {
 		return PathValidator{}, err
+	}
+	if f.ValueExpression != nil {
+		if err := checkExpressionBudget(f.ValueExpression); err != nil {
+			return PathValidator{}, err
+		}
 	}
 	return PathValidator{
 		path:       f,
